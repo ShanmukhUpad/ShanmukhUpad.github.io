@@ -1,0 +1,816 @@
+---
+title: "A Spatial Analysis of Walkability and Urban Form in the Chicago Metropolitan Area"
+author:
+  - name: Shanmukh Upadhyayula
+    affiliation: Department of Geography and GIS, University of Illinois at Urbana-Champaign
+date: "December 18, 2025"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+editor_options:
+  markdown: 
+    wrap: 72
+---
+
+```{=html}
+<style>
+body {
+  font-family: "Times New Roman", Times, serif;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: "Times New Roman", Times, serif;
+}
+
+pre, code {
+  font-family: "Courier New", Courier, monospace;
+}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r setwd, include=FALSE}
+setwd("~/EnvironmentalDataScience/GGIS_224_Final_Project")
+```
+
+```{r environment-setup, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(sf)
+library(tmap)
+library(knitr)
+library(corrplot)
+library(broom)
+library(spdep)
+library(scales)
+library(tigris)
+
+options(tigris_use_cache = TRUE)
+```
+
+# **Introduction**
+
+Walkability is a measure for how safe an area is for pedestrians as well
+as amenities being within a reasonable walking distance. Right now, the
+ChiVes database does not have a walkability measure for the built
+environment of Chicago. Thus, adding such a measure would give an idea
+of what the City of Chicago could do to improve the built environment.
+Chicago itself already has a decently high walkability score compared to
+most cities in the United States, but some areas still suffer from
+car-friendly exclusive infrastructure. Improving the walkability score
+for a region would also improve the urban sustainability and the
+transportation equity of the city.
+
+The data source for this project is the EPA National Walkability Index
+from 2021. This dataset uses block groups as its spatial scale, but to
+assure compatibility with ChiVes, it has been converted to the 2020
+census tracts.
+
+**Hypothesis:** Walkability will be higher in the CBD/The Loop compared
+to outer areas. Since there is a high population density near the
+center, walkability should also high. However, although it is expected
+that most census tracts will have an above average walkability score due
+to Chicago being the third most populous city in the United States,
+there will still be a decent chunk of census tracts in the below average
+range as well as the most walkable range. Thus, this project will also
+include population density and transit access as exploratory variables.
+
+The goal this project is to visualize data so that there is a way to see
+how walkabilty varies across Chicago and whether or not higher transit
+access areas have a direct, inverse, or unrelated correlation with
+walkability. Such visualizations already exist out in on the internet,
+but adding it to ChiVes will place it among many other important
+environmental data so that everyone can see this measure in one coherent
+place.
+
+------------------------------------------------------------------------
+
+# **Data Wrangling**
+
+The dataset used for this project is the EPA National Walkability
+geodatabase from 2021. The data has been filtered to only include the
+Chicago metropolitan area by filtering the CBSA and the FIPS codes to
+the region. Next, the data must be cleaned to remove any possible
+analysis to ensure accuracy of the data. Therefore, anything with
+missing values have been removed.
+
+The way that the EPA classifies walkability is out of a score of 20 that
+goes like the following:
+
+**EPA Walkability Score Categories:**\
+1 - 5.75: Least Walkable\
+5.76 - 10.50: Below Average Walkable\
+10.51 - 15.25: Above Average Walkable\
+15.26 - 20: Most Walkable
+
+The main problem with this is that the "most walkable" category is too
+large of a range, even if it uses the same difference of 4.76/4.75 per
+category. Since this is out of 20, a census tract with a score of 15.26
+would be in the 76th percentile, while a census tract even just 3 points
+higher would be in the 91st percentile. That is why it is important to
+add another category. 15.26 + 4.76 = 20.02, which would make this fifth
+category above the scale itself. That's why for this project, the fifth
+category, most walkable (the category previously called most walkable is
+now renamed to highly walkable), is now only at 18.1, or just slightly
+above the 90th percentile.
+
+**Adjusted Categories:**
+
+15.25 - 18.00: Highly Walkable
+
+18 - 20: Most Walkable
+
+The spatial scale that this data is in the format of is that of block
+groups. However, since ChiVes uses census tracts, the data is converted
+from block groups to census tracts. Since a census tracts compose of
+many different block groups, it is expected that there should be more
+block groups than census tracts. If it is the opposite, then something
+would be done incorrectly in the calculations. Thus, it makes sense why
+the number of block groups is 2.9 times higher than the number of census
+tracts.
+
+Once all the cleaning is done, it is finally time to create categorical
+walkability variables. The EPA rates walkability on a scale from 0-20.
+In the code, the ranges on how walkability is categorized are shown in
+the **r transformations** section. The sum of all walkability category
+variables should equal the number of census tracts after cleaning the
+data.
+
+```{r load-data}
+# Load the National Walkability Index data from geodatabase
+walkability_raw <- st_read("Natl_WI.gdb", 
+                           layer = "NationalWalkabilityIndex")
+cat("Variables available:", ncol(walkability_raw), "\n\n")
+names(walkability_raw)
+```
+
+```{r spatial-filter}
+# Filter to Chicago metropolitan area
+walkability_chicago <- walkability_raw %>%
+  filter(STATEFP == "17", CBSA == "16980") %>%
+  st_transform(crs = 4326)
+
+cat("Number of block groups in Chicago metropolitan area:", nrow(walkability_chicago), "\n")
+```
+
+```{r variable-selection}
+# Extract census tract ID and select variables
+walkability_clean <- walkability_chicago %>%
+  mutate(TRACT_GEOID = substr(GEOID10, 1, 11)) %>%
+  select(
+    GEOID_BG = GEOID20,
+    TRACT_GEOID,
+    walk_score = NatWalkInd,
+    employment_entropy = D2A_EPHHM,
+    intersection_density = D3B,
+    transit_distance = D4A,
+    total_pop = TotPop,
+    total_workers = Workers,
+    households = HH,
+    land_area_ac = Ac_Land,
+    geometry = Shape
+  )
+
+cat("Block groups before aggregation:", nrow(walkability_clean), "\n")
+```
+
+```{r data-cleaning}
+# Check for missing values
+missing_summary <- walkability_clean %>%
+  st_drop_geometry() %>%
+  summarise(
+    missing_walk_score = sum(is.na(walk_score)),
+    missing_pop = sum(is.na(total_pop)),
+    missing_transit = sum(is.na(transit_distance)),
+    missing_land_area = sum(is.na(land_area_ac)),
+    total_block_groups = n()
+  )
+
+print(missing_summary)
+
+# Remove block groups with missing data
+walkability_clean <- walkability_clean %>%
+  filter(!is.na(walk_score), !is.na(total_pop), !is.na(land_area_ac),
+         land_area_ac > 0, walk_score > 0)
+
+cat("\nBlock groups after cleaning:", nrow(walkability_clean), "\n")
+```
+
+```{r block-groups-to-census-tracts}
+# Aggregate from block groups to census tracts
+tract_data <- walkability_clean %>%
+  filter(!is.na(walk_score), !is.na(total_pop), !is.na(land_area_ac),
+         !is.na(intersection_density), !is.na(employment_entropy),
+         !is.na(transit_distance)) %>%
+  group_by(TRACT_GEOID) %>%
+  summarise(
+    walk_score = sum(walk_score * total_pop) / sum(total_pop),
+    total_pop = sum(total_pop),
+    total_workers = sum(total_workers),
+    households = sum(households),
+    land_area_ac = sum(land_area_ac),
+    intersection_density = sum(intersection_density * land_area_ac) / sum(land_area_ac),
+    employment_entropy = sum(employment_entropy * total_pop) / sum(total_pop),
+    transit_distance = sum(transit_distance * total_pop) / sum(total_pop),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    pop_density_sqmi = (total_pop / land_area_ac) * 640,
+    workers_per_hh = total_workers / (households + 0.1),
+    transit_distance_km = transit_distance / 1000
+  )
+
+cat("\nNumber of census tracts:", nrow(tract_data), "\n")
+```
+
+```{r load-chives}
+# Load ChiVes data
+chives_data <- st_read("chives-data.geojson")
+
+chives_clean <- chives_data %>%
+  st_drop_geometry() %>%
+  mutate(geoid = as.character(geoid))
+
+tract_data_clean <- tract_data %>%
+  mutate(TRACT_GEOID = as.character(TRACT_GEOID))
+
+tract_data_with_chives <- tract_data_clean %>%
+  left_join(chives_clean, by = c("TRACT_GEOID" = "geoid"))
+```
+
+```{r city-tracts}
+# Census tracts in city of Chicago
+chicago_boundary <- places(state = "IL", cb = TRUE) %>%
+  filter(NAME == "Chicago") %>%
+  st_transform(4326)
+
+chicago_city_tracts <- tract_data_with_chives %>%
+  st_filter(chicago_boundary, .predicate = st_intersects)
+
+num_chicago_tracts <- nrow(chicago_city_tracts)
+difference <- nrow(tract_data_with_chives) - num_chicago_tracts
+
+# Print results
+cat("Census tracts in the city of Chicago:", num_chicago_tracts, "\n")
+cat("Difference from Greater Chicago area census tracts:", difference, "\n")
+cat("Percentage of census tracts in the city of Chicago:", 
+    floor((num_chicago_tracts / nrow(tract_data_with_chives)) * 1000) / 10, "%\n")
+```
+
+```{r categorization}
+# Create categorical walkability variable with adjusted categories
+final_data <- tract_data_with_chives %>%
+  mutate(
+    walk_category = case_when(
+      walk_score >= 18.1 ~ "Most Walkable",
+      walk_score >= 15.26 & walk_score < 18.1 ~ "Highly Walkable",
+      walk_score >= 10.51 & walk_score < 15.26 ~ "Above Average Walkable",
+      walk_score >= 5.76 & walk_score < 10.51 ~ "Below Average Walkable",
+      walk_score >= 1 & walk_score < 5.76 ~ "Least Walkable",
+      TRUE ~ "No Data"
+    ),
+    walk_category = factor(
+      walk_category,
+      levels = c(
+        "Least Walkable",
+        "Below Average Walkable",
+        "Above Average Walkable",
+        "Highly Walkable",
+        "Most Walkable",
+        "No Data"
+      )
+    )
+  )
+```
+
+------------------------------------------------------------------------
+
+# **Exploratory Methods**
+
+The main approach for this model was to create statistical variables
+such as finding the lowest, highest, mean, median, and standard
+deviation walk scores. In addition, the mean population density and mean
+transit distance has been calculated in order to support the main
+walkability variables.
+
+Once the variables are created, correlations were found among them via a
+correlation matrix. Then, a few statistical tests were created around
+these variables such as a Moran I's test, linear regression, and ANOVA.
+These exploratory methods allow spatial analysis that provide important
+insights into Chicago.
+
+**Reasons for each method's inclusion:**\
+
+**Moran I's Test:**
+
+This test measures spatial autocorrelations, which are important in
+finding out whether census tracts with high or low walkability scores
+cluster together. For Chicago, it can show if the most walkable
+neighborhoods like The Loop connect easily with surrounding
+neighborhoods, or if the walkability is contained within the
+neighborhood itself.
+
+**Linear Regression and Correlation Matrix:**
+
+These statistical analysis quantify the relationship between the main
+walkability variable and exploratory variables such as population
+density, transit access, street intersection density, and employment
+entropy. Seeing the relationships between walkability and these
+variables can influence the sustainability and overall qaulity of life
+in Chicago.
+
+**Analysis of Variance (ANOVA):**
+
+This method compares the mean differences between contiuous variables
+across all five levels of walkability. Thus, it is important for seeing
+whether there is much of a difference in these variables between a level
+like "Below Average Walkable" vs "Highly Walkable".
+
+```{r descriptive-stats}
+# Summary statistics
+summary_stats <- final_data %>%
+  st_drop_geometry() %>%
+  summarise(
+    N_Tracts = n(),
+    Mean_Walkability = round(mean(walk_score, na.rm = TRUE), 2),
+    SD_Walkability = round(sd(walk_score, na.rm = TRUE), 2),
+    Median_Walk = round(median(walk_score, na.rm = TRUE), 2),
+    Min_Walk = round(min(walk_score, na.rm = TRUE), 2),
+    Max_Walk = round(max(walk_score, na.rm = TRUE), 2),
+    Mean_Pop_Density = round(mean(pop_density_sqmi, na.rm = TRUE), 0),
+    Mean_Transit_Dist = round(mean(transit_distance_km, na.rm = TRUE), 2)
+  )
+
+kable(summary_stats, caption = "Summary Statistics for Chicago Census Tracts")
+```
+
+```{r correlation}
+# Correlation matrix
+cor_data <- final_data %>%
+  st_drop_geometry() %>%
+  select(walk_score, pop_density_sqmi, intersection_density, 
+         employment_entropy, transit_distance_km, workers_per_hh) %>%
+  na.omit()
+
+cor_matrix <- cor(cor_data, use = "complete.obs")
+
+corrplot(cor_matrix, method = "color", type = "upper",
+         addCoef.col = "black", number.cex = 0.7,
+         tl.col = "black", tl.srt = 45,
+         title = "Correlation Matrix: Walkability and Related Variables",
+         mar = c(0,0,2,0))
+```
+
+```{r spatial-autocorrelation}
+# Moran's I test for spatial autocorrelation
+final_data_complete <- final_data %>%
+  filter(!is.na(walk_score))
+
+coords <- st_coordinates(st_centroid(final_data_complete))
+neighbors <- knn2nb(knearneigh(coords, k = 8))
+weights <- nb2listw(neighbors, style = "W")
+
+moran_test <- moran.test(final_data_complete$walk_score, weights)
+cat("Moran's I test for spatial autocorrelation:\n")
+print(moran_test)
+
+if(moran_test$p.value < 0.05) {
+  cat("\nSignificant spatial autocorrelation detected (p < 0.05)")
+} else {
+  cat("\nNo significant spatial autocorrelation detected")
+}
+```
+
+```{r statistical-tests}
+# Linear regression
+model <- lm(walk_score ~ pop_density_sqmi + transit_distance_km + 
+              intersection_density + employment_entropy, 
+            data = final_data)
+
+summary(model)
+
+model_summary <- tidy(model)
+kable(model_summary, digits = 3, 
+      caption = "Regression Results: Predictors of Walkability Score")
+
+# ANOVA
+anova_result <- aov(pop_density_sqmi ~ walk_category, data = final_data)
+print(summary(anova_result))
+
+anova_pvalue <- summary(anova_result)[[1]]$`Pr(>F)`[1]
+if(!is.na(anova_pvalue) && anova_pvalue < 0.05) {
+  cat("\nTukey HSD Post-hoc test:\n")
+  print(TukeyHSD(anova_result))
+}
+```
+
+------------------------------------------------------------------------
+
+# **Results**
+
+The data reflects the initial hypothesis that most areas would be in the
+"Above Average Walkability" range. 1,090 out of 2,014 census tracts are
+in this range. However, this may also be due to the fact that population
+plays a huge role in determining a census tract boundary. Since the
+correlation between walkability and population density has been
+confirmed via the correlation matrix and the linear regression, it makes
+sense why over half of the census tracts belong to the "Above Average
+Walkability" category.
+
+**Walkability Map for the City of Chicago versus Walkability Map for the
+Greater Chicago Area:\
+**The visualization for the walkability scores of each census tract in
+Chicago describes what the paragraph above has mentioned. The larger the
+census tract's land area, the more likely its walkability score is that
+of a lower percentile. Since the ChiVes website only visualizes the city
+of Chicago itself, only the main walkability map for the city will be
+used, but including the Greater Chicago area shows how suburban sprawl
+has affected the walkability of America, as many other cities have
+similar patterns to Chicago.
+
+**Higher Variability Walkability Map for the City of Chicago:**
+
+Although the adjusted fourth category and the addition of a fifth
+category added more variability among census tracts to produce a
+visualization at a higher accuracy, using a jenks style provides natural
+breaks in the data, which can produce a visualization where there is an
+even higher variability among census tracts. This uses its own
+categorization, which does not even count for the "Least Walkable"
+category, as not a single census tract within the city itself is
+categorized as such.
+
+**Population Density Visualization:**
+
+This map only exists to be able to see the correlations between
+walkability and population density in a map form. Obviously, many of the
+census tracts near The Loop have the most population density, which
+correlate to the most walkable census tracts. A quantile classification
+style has been used for this map because it spreads the data evenly
+across a similar number of census tracts. If jenks was used, there would
+be far more census tracts filled gray, making the map visually uneven.
+
+**Street Intersection Density:**
+
+This map helps in identifying pedestrian-centric or car-centric areas,
+which is helpful for understanding the impacts of a built environment's
+impact on walkability and sustainability. The density of a street
+intersection may reveal its proximity to transit stations or other
+amenities that a city has to offer. A jenks classification style has
+been used for this map, as it uses natural breaks in the data. For a
+street network, it minimizes and class variances to show groupings more
+easily than quantile would.
+
+**Linear Regression Visualization:**
+
+As explained in the exploratory methods section, the linear regression
+shows the relationship between walkability and population density for
+each census tract. Most tracts are below a population density of 50,000
+and have a walkability score from 5 - 15.
+
+**Economic Opportunity Visualization:**
+
+This map has been created using the economic hardship variable is taken
+from the existing ChiVes dataset. The opportunity variable is an inverse
+of hardship. The purpose of this visualization's inclusion in this
+analysis is to reveal correlations between walkability and a positive
+variable such as economic opportunity. Since there is no overall quality
+of life variable, economic opportunity is generally the best indicator
+of such a measure. However, there are still many other ways to draw
+correlations between walkability and quality of life. The census tracts
+with the highest economic opportunity generally align with census tracts
+that fall in the "high walkability" or "most walkability" categories. A
+jenks classification style has been used for this map, as for the same
+reasons as street intersection density's.
+
+**Scatterplot Matrix:**
+
+This visualization shows pair relationships between walkability and
+several variables. There are many plots that cluster around each other.
+
+```{r results-summary}
+# Summary table by walkability category
+results_table <- final_data %>%
+  st_drop_geometry() %>%
+  group_by(walk_category) %>%
+  summarise(
+    N_Tracts = n(),
+    Mean_Walk_Score = round(mean(walk_score, na.rm = TRUE), 2),
+    Total_Population = sum(total_pop, na.rm = TRUE),
+    Mean_Pop_Density = round(mean(pop_density_sqmi, na.rm = TRUE), 0),
+    Mean_Transit_Dist_km = round(mean(transit_distance_km, na.rm = TRUE), 2),
+    Mean_Intersection_Density = round(mean(intersection_density, na.rm = TRUE), 1)
+  )
+
+kable(results_table, 
+      caption = "Mean Values by Walkability Category (Census Tract Level)")
+```
+
+```{r greater-chicago-walkability, fig.width=10, fig.height=8}
+tm_shape(final_data) +
+  tm_fill(
+    "walk_category",
+    palette = c(
+      "Least Walkable" = "#b30000",
+      "Below Average Walkable" = "#f4a6a6",
+      "Above Average Walkable" = "#d5ff7a",
+      "Highly Walkable" = "#a1d99b",
+      "Most Walkable" = "#006400",
+      "No Data" = "#bdbdbd"
+    ),
+    title = "Walkability Category"
+  ) +
+  tm_borders(alpha = 0.3, lwd = 0.5) +
+  tm_layout(
+    main.title = "Greater Chicago Area Walkability by Census Tract (2021)",
+    main.title.size = 1.2,
+    legend.outside = TRUE,
+    legend.outside.position = "right",
+    frame = FALSE
+  ) +
+  tm_compass(position = c("left", "top")) +
+  tm_scale_bar(position = c("left", "bottom"))
+```
+
+```{r chicago-city-walkability, fig.width=10, fig.height=8}
+# Get Chicago city boundary from Census
+chicago_boundary <- places(state = "IL", cb = TRUE) %>%
+  filter(NAME == "Chicago") %>%
+  st_transform(4326)
+
+chicago_city <- final_data %>%
+  st_filter(chicago_boundary, .predicate = st_intersects)
+
+# Main walkability score map
+tm_shape(chicago_city) +
+  tm_fill(
+    "walk_category",
+    palette = c(
+      "Least Walkable" = "#b30000",
+      "Below Average Walkable" = "#f4a6a6",
+      "Above Average Walkable" = "#d5ff7a",
+      "Highly Walkable" = "#a1d99b",
+      "Most Walkable" = "#006400",
+      "No Data" = "#bdbdbd"
+    ),
+    title = "Walkability Category"
+  ) +
+  tm_borders(alpha = 0.3, lwd = 0.5) +
+  tm_layout(
+    main.title = "Chicago City Walkability by Census Tract (2021)",
+    main.title.size = 1.2,
+    legend.outside = TRUE,
+    legend.outside.position = "right",
+    frame = TRUE
+  ) +
+  tm_compass(position = c("left", "top")) +
+  tm_scale_bar(position = c("left", "bottom"))
+```
+
+```{r variability-visualizations, fig.width=10, fig.height=8}
+
+# Walkability score map with higher variations
+chicago_boundary <- places(state = "IL", cb = TRUE) %>%
+  filter(NAME == "Chicago") %>%
+  st_transform(4326)
+
+chicago_city <- final_data %>%
+  st_filter(chicago_boundary, .predicate = st_intersects)
+
+tm0 <- tm_shape(chicago_city) +
+  tm_fill("walk_score",
+          palette = "magma", 
+          style = "jenks",
+          n = 5,
+          title = "Walkability Category") +
+  tm_borders(alpha = 0.2, lwd = 0.3) +
+  tm_layout(main.title = "Chicago City Walkability Scores Adjusted for Higher Standards of Chicago", 
+            legend.position = c("left", "bottom"),
+            main.title.size = 1.1,
+            frame = TRUE)
+tmap_arrange(tm0, ncol = 1)
+```
+
+```{r additional-visualizations, fig.width=12, fig.height=8}
+# Chicago city boundary
+chicago_boundary <- places(state = "IL", cb = TRUE) %>%
+  filter(NAME == "Chicago") %>%
+  st_transform(4326)
+
+chicago_city <- final_data %>%
+  st_filter(chicago_boundary, .predicate = st_intersects)
+
+# Visualization 1: Population Density Map
+tm1 <- tm_shape(chicago_city) +
+  tm_fill("pop_density_sqmi", palette = "Blues", style = "quantile", n = 5, 
+          title = "Pop/sq mi") +
+  tm_borders(alpha = 0.2, lwd = 0.3) +
+  tm_layout(main.title = "Population Density", 
+            legend.position = c("left", "bottom"),
+            main.title.size = 1.1,
+            frame = TRUE)
+
+# Visualization 2: Street Intersection Density
+tm2 <- tm_shape(chicago_city) +
+  tm_fill("intersection_density", 
+          palette = "Oranges", 
+          style = "jenks",
+          n = 5,
+          title = "Intersections/km²") +
+  tm_borders(alpha = 0.2, lwd = 0.3) +
+  tm_layout(main.title = "Street Intersection Density", 
+            legend.position = c("left", "bottom"),
+            main.title.size = 1.1,
+            frame = TRUE)
+
+# Visualization 3: Economic Opportunity (Inverse of Hardship)
+
+# Filter to only tracts with hardship data and invert so higher = better
+chicago_city_quality <- chicago_city %>%
+  filter(!is.na(hardship)) %>%
+  mutate(opportunity = 100 - hardship)
+
+tm3 <- tm_shape(chicago_city_quality) +
+  tm_fill("opportunity", 
+          palette = "Purples", 
+          style = "jenks",
+          n = 5,
+          title = "Opportunity Index") +
+  tm_borders(alpha = 0.2, lwd = 0.3) +
+  tm_layout(main.title = "Economic Opportunity (Lower Hardship)", 
+            legend.position = c("left", "bottom"),
+            main.title.size = 1.1,
+            frame = TRUE)
+
+
+tmap_arrange(tm1, tm2, tm3, ncol = 3)
+```
+
+```{r regression-visualization, fig.width=10, fig.height=6}
+# Scatterplot: Walkability vs Population Density with regression line
+ggplot(final_data %>% st_drop_geometry(), 
+       aes(x = pop_density_sqmi, y = walk_score)) +
+  geom_point(alpha = 0.4, color = "#9970ab") +
+  geom_smooth(method = "lm", se = TRUE, color = "#301934") +
+  scale_y_continuous(limits = c(0, 20)) +
+  scale_x_continuous(labels = comma) +
+  labs(
+    title = "Relationship Between Population Density and Walkability",
+    x = "Population Density (per square mile)",
+    y = "Walkability Score",
+    caption = "Each point represents one census tract"
+  ) +
+  theme(plot.title = element_text(size = 14, face = "bold"))
+```
+
+```{r scatterplot-matrix, fig.width=8, fig.height=6}
+# Scatterplot matrix
+pairs_data <- final_data %>%
+  st_drop_geometry() %>%
+  select(walk_score, pop_density_sqmi, transit_distance_km, 
+         intersection_density, employment_entropy) %>%
+  na.omit()
+
+pairs(pairs_data,
+      main = "Scatterplot Matrix: Walkability and Related Variables",
+      pch = 16,
+      col = rgb(0, 0, 1, 0.3))
+```
+
+------------------------------------------------------------------------
+
+# **Discussion**
+
+This analysis reveals that walkability in the Chicago metropolitan area
+has a strong correlation with population density, while it is still not
+the case that an area simply having a high population density is a
+direct cause for a high walkability score, as indicated by comparing the
+walkability score map and the population density map. The Moran I's test
+confirms that walkability is not just randomly distributed but follows
+patterns on a neighborhood scale. This can be seen in the walkability
+map, as walkability scores lower over time as one leaves the city, with
+only a few exceptions.
+
+Across the United States, an emerging experimental trend is the
+"15-minute city", where all the amenities that come with being in a town
+or city can be accessed within the span of a 15 minute walk. Even in
+some low-density suburbs, there is demand for a reduction in car-centric
+infrastructure. The three maps in the additional visualizations sections
+all had a positive correlation with the main walkability score map. When
+there is a high population density, there is a tendency to build
+amenities closer together, which leads to a high street intersection
+density. When many amenities are closer together, that often leads to
+mixed-use buildings, which make it easier for job opportunities to rise
+compared to that of separating regions entirely by commercial vs
+residential. However, it is important to realize that there are census
+tracts which are exceptions to this general correlation, as seen in the
+regression model, implying that walkability is not an effect of the
+three additional variables. In other words, an area can still be
+relatively low-density and still have a high walkability score, which is
+what the aim of the "15-minute city" is.
+
+All of these findings justify the inclusion of this dataset into ChiVes
+as it provides this information within the context of all of the other
+environmental factors that either positively or negatively influence the
+lives of Chicagoans on a daily basis. However, there are still a few
+limitations to this dataset that prevented this analysis from reaching
+its full potential. There are five census tracts with no data, due to
+them primarily not having many people at all. Furthermore, walkability
+scores do not account for a few aspects of the urban form, such as the
+quality of a sidewalk, how convenient it is to walk somewhere in warmer
+versus colder weather, crime rates, or how relevant an amenity is on a
+daily basis to the average person.
+
+Throughout the analysis, several issues with the R code occurred. The
+first challenge was converting from block groups to census tracts. The
+initial approach to this was taking a weighted mean of the block groups,
+but that would have produced misleading results due to the variables for
+the data being counted incorrectly (i.e. not counting some data or
+double counting some data). It is also challenging to include a census
+tract if it is missing some variables. Thus, removing all data for the
+census tract is the easiest thing to do. Thankfully, this only removed
+5/2014 census tracts. This method of computing weighted means was later
+changed to sum the product of a variable's value and its corresponding
+weight, divided by the sum of the weights. In other words, this method
+accounted for the population of an area, since census tracts with larger
+populations contributed more proportionally to the final conversion from
+block groups to census tracts than lower density areas.
+
+The next challenge was getting the exact Chicago boundaries. Initially,
+the spatial filtering to visualize Chicago was just using four
+coordinates to form a rectangle around the area. The problem with this
+was that areas outside the desired analysis were present in the
+visualization. Thus, the spatial filtering was later changed to using
+places function from the tigris library and transforming the location
+into the correct CRS. This filtered the boundaries to the exact polygon.
+
+Then, another persistent challenge to overcome in this analysis was
+surprisingly loading in the ChiVes data. Usually, loading in a dataset
+should be simple, but the EPA Walkability variables were being
+incorporated into the chicago_city final data before the ChiVes
+variables had been incorporated into that same variable. This was solved
+by performing a left_join() on the EPA Walkability's TRACT_GEOID and
+ChiVes' geoid variable.
+
+This analysis is only an introductory step in a hopefully ongoing
+process to bring attention to improve walkability across not just
+Chicago but around all of the Greater Chicago Metropolitan area as a
+whole. Implementing this into ChiVes would vastly increase the chances
+of new policy implementation such as new transit lines, added bike
+lanes, re-zoning projects, and new street layout projects. As previously
+mentioned four paragraphs back, a walkability score does not account for
+everything related to the convenience of pedestrians. Future work for
+this project could include adding data to integrate these factors into
+new visualizations. Perhaps an entirely new data generating process
+(DGP) is needed in order to maximize the accuracy of this data. In fact,
+the idea that 1090 census tracts are classified as "Above Average
+Walkability" does not make sense. If the average walkability score is
+singular value, it makes sense why there is no category called "Average
+Walkability"; Everything can only either be below or above that average.
+Finally, training machine learning models can speed up and also increase
+the accuracy of the aforementioned DGP. These models would be able to
+predict walkability scores based off of current built-environment
+variables, create new variables, and even incorporate scenario-based
+testing.
+
+All of these goals and this current analysis is extremely important for
+the environmental sustainability and quality of life in the urban form.
+
+------------------------------------------------------------------------
+
+# **References and .csv Export**
+
+```{r export-to-csv}
+
+chicago_boundary <- places(state = "IL", cb = TRUE) %>%
+  filter(NAME == "Chicago") %>%
+  st_transform(4326)
+
+chicago_export <- final_data %>%
+  st_filter(chicago_boundary, .predicate = st_intersects) %>%
+  st_drop_geometry() %>%
+  select(
+    geoid = TRACT_GEOID,
+    walkability_score = walk_score,
+    walkability_category = walk_category,
+    employment_entropy = employment_entropy,
+    intersection_density = intersection_density,
+    transit_distance_km = transit_distance_km,
+  )
+
+write_csv(chicago_export, "chicago_walkability_for_chives.csv")
+
+```
+
+-   U.S. Environmental Protection Agency. (2021). National Walkability
+    Index: User Guide and Methodology.
+-   U.S. Environmental Protection Agency. (2021). Smart Location
+    Database Technical Documentation.
+-   ChiVes Project Team. (2024). ChiVes: Chicago Visualization and
+    Environmental Sustainability Platform. University of Illinois at
+    Urbana-Champaign.
+
+------------------------------------------------------------------------
