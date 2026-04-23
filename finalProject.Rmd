@@ -649,6 +649,39 @@ tm3 <- tm_shape(chicago_city_quality) +
 tmap_arrange(tm1, tm2, tm3, ncol = 3)
 ```
 
+```{r walkability-correlations}
+# Bivariate correlations: walkability vs each mapped variable
+city_stats <- chicago_city %>%
+  st_drop_geometry() %>%
+  select(walk_score, pop_density_sqmi, intersection_density) %>%
+  na.omit()
+
+city_quality_stats <- chicago_city_quality %>%
+  st_drop_geometry() %>%
+  select(walk_score, opportunity) %>%
+  na.omit()
+
+ct_pop <- cor.test(city_stats$walk_score, city_stats$pop_density_sqmi)
+ct_int <- cor.test(city_stats$walk_score, city_stats$intersection_density)
+ct_opp <- cor.test(city_quality_stats$walk_score, city_quality_stats$opportunity)
+
+tibble(
+  Variable  = c("Population Density", "Street Intersection Density", "Economic Opportunity"),
+  r         = round(c(ct_pop$estimate, ct_int$estimate, ct_opp$estimate), 3),
+  `R²`      = round(c(ct_pop$estimate^2, ct_int$estimate^2, ct_opp$estimate^2), 3),
+  `p-value` = c(ct_pop$p.value, ct_int$p.value, ct_opp$p.value),
+  Sig       = dplyr::case_when(
+    `p-value` < 0.001 ~ "***",
+    `p-value` < 0.01  ~ "**",
+    `p-value` < 0.05  ~ "*",
+    TRUE              ~ "n.s."
+  )
+) %>%
+  mutate(`p-value` = ifelse(`p-value` < 0.001, "< 0.001",
+                            as.character(round(`p-value`, 3)))) %>%
+  knitr::kable(caption = "Bivariate Pearson correlations with walkability score (two-tailed)")
+```
+
 ```{r regression-visualization, fig.width=10, fig.height=6}
 # Scatterplot: Walkability vs Population Density with regression line
 ggplot(final_data %>% st_drop_geometry(), 
