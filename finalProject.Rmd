@@ -678,7 +678,7 @@ tmap_arrange(tm1, tm2, tm3, tm4, tm5, ncol = 3)
 
 ```{r walkability-correlations}
 # Bivariate correlations: walkability vs each mapped variable
-city_stats <- chicago_city %>%
+city_stats <- final_data %>%
   st_drop_geometry() %>%
   select(walk_score, pop_density_sqmi, intersection_density,
          workers_per_hh, transit_distance_km) %>%
@@ -716,44 +716,25 @@ tibble(
   knitr::kable(caption = "Bivariate Pearson correlations with walkability score (two-tailed)")
 ```
 
-```{r regression-visualization, fig.width=16, fig.height=6, message=FALSE}
-library(patchwork)
+```{r regression-visualization, fig.width=10, fig.height=6, message=FALSE}
+scatter_data <- final_data %>% st_drop_geometry() %>%
+  select(walk_score, transit_distance_km) %>% na.omit()
 
-scatter_data <- chicago_city %>% st_drop_geometry() %>%
-  select(walk_score, workers_per_hh, transit_distance_km) %>% na.omit()
-
-r2_wkr <- round(cor(scatter_data$walk_score, scatter_data$workers_per_hh)^2, 3)
 r2_trn <- round(cor(scatter_data$walk_score, scatter_data$transit_distance_km)^2, 3)
 
-p1 <- ggplot(scatter_data, aes(x = workers_per_hh, y = walk_score)) +
-  geom_point(alpha = 0.35, color = "#2b8cbe") +
-  geom_smooth(method = "lm", se = TRUE, color = "#084594") +
-  scale_y_continuous(limits = c(0, 20)) +
-  labs(
-    title = "Workers per Household vs Walkability",
-    subtitle = paste0("R² = ", r2_wkr),
-    x = "Workers per Household",
-    y = "Walkability Score",
-    caption = "Each point = one census tract"
-  ) +
-  theme(plot.title = element_text(size = 13, face = "bold"),
-        plot.subtitle = element_text(size = 11, color = "#555"))
-
-p2 <- ggplot(scatter_data, aes(x = transit_distance_km, y = walk_score)) +
+ggplot(scatter_data, aes(x = transit_distance_km, y = walk_score)) +
   geom_point(alpha = 0.35, color = "#e6550d") +
   geom_smooth(method = "lm", se = TRUE, color = "#a63603") +
   scale_y_continuous(limits = c(0, 20)) +
   labs(
-    title = "Transit Distance vs Walkability",
-    subtitle = paste0("R² = ", r2_trn),
+    title = "Distance to Nearest Transit Stop vs Walkability",
+    subtitle = paste0("R² = ", r2_trn, " — strongest single predictor in the dataset"),
     x = "Distance to Nearest Transit Stop (km)",
     y = "Walkability Score",
-    caption = "Each point = one census tract"
+    caption = "Each point = one census tract (Greater Chicago metro area, n ≈ 2,009)"
   ) +
-  theme(plot.title = element_text(size = 13, face = "bold"),
+  theme(plot.title = element_text(size = 14, face = "bold"),
         plot.subtitle = element_text(size = 11, color = "#555"))
-
-p1 + p2
 ```
 
 ```{r scatterplot-matrix, fig.width=8, fig.height=6}
