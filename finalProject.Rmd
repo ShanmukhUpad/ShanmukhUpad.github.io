@@ -35,7 +35,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 
 ```{r setwd, include=FALSE}
-setwd("~/EnvironmentalDataScience/GGIS_224_Final_Project")
+setwd("C:/Users/shanm/Documents/Personal Projects/ShanmukhUpad.github.io")
 ```
 
 ```{r environment-setup, warning=FALSE, message=FALSE}
@@ -142,7 +142,7 @@ data.
 
 ```{r load-data}
 # Load the National Walkability Index data from geodatabase
-walkability_raw <- st_read("Natl_WI.gdb", 
+walkability_raw <- st_read("WalkabilityIndex/Natl_WI.gdb",
                            layer = "NationalWalkabilityIndex")
 cat("Variables available:", ncol(walkability_raw), "\n\n")
 names(walkability_raw)
@@ -229,7 +229,7 @@ cat("\nNumber of census tracts:", nrow(tract_data), "\n")
 
 ```{r load-chives}
 # Load ChiVes data
-chives_data <- st_read("chives-data.geojson")
+chives_data <- st_read("chives-data-public.geojson")
 
 chives_clean <- chives_data %>%
   st_drop_geometry() %>%
@@ -532,7 +532,7 @@ tm_shape(final_data) +
     frame = FALSE
   ) +
   tm_compass(position = c("left", "top")) +
-  tm_scale_bar(position = c("left", "bottom"))
+  tm_scalebar(position = c("left", "bottom"))
 ```
 
 ```{r chicago-city-walkability, fig.width=10, fig.height=8}
@@ -567,7 +567,7 @@ tm_shape(chicago_city) +
     frame = TRUE
   ) +
   tm_compass(position = c("left", "top")) +
-  tm_scale_bar(position = c("left", "bottom"))
+  tm_scalebar(position = c("left", "bottom"))
 ```
 
 ```{r variability-visualizations, fig.width=10, fig.height=8}
@@ -630,8 +630,8 @@ tm2 <- tm_shape(chicago_city) +
 
 # Filter to only tracts with hardship data and invert so higher = better
 chicago_city_quality <- chicago_city %>%
-  filter(!is.na(hardship)) %>%
-  mutate(opportunity = 100 - hardship)
+  filter(!is.na(hrdshpIndx)) %>%
+  mutate(opportunity = 100 - hrdshpIndx)
 
 tm3 <- tm_shape(chicago_city_quality) +
   tm_fill("opportunity", 
