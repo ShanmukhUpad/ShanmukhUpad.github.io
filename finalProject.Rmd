@@ -594,7 +594,7 @@ tm0 <- tm_shape(chicago_city) +
 tmap_arrange(tm0, ncol = 1)
 ```
 
-```{r additional-visualizations, fig.width=12, fig.height=8}
+```{r additional-visualizations, fig.width=12, fig.height=14}
 # Chicago city boundary
 chicago_boundary <- places(state = "IL", cb = TRUE) %>%
   filter(NAME == "Chicago") %>%
@@ -646,14 +646,42 @@ tm3 <- tm_shape(chicago_city_quality) +
             frame = TRUE)
 
 
-tmap_arrange(tm1, tm2, tm3, ncol = 3)
+
+# Visualization 4: Workers per Household
+tm4 <- tm_shape(chicago_city) +
+  tm_fill("workers_per_hh",
+          palette = "YlOrRd",
+          style = "jenks",
+          n = 5,
+          title = "Workers/HH") +
+  tm_borders(alpha = 0.2, lwd = 0.3) +
+  tm_layout(main.title = "Workers per Household",
+            legend.position = c("left", "bottom"),
+            main.title.size = 1.1,
+            frame = TRUE)
+
+# Visualization 5: Transit Distance
+tm5 <- tm_shape(chicago_city) +
+  tm_fill("transit_distance_km",
+          palette = "-BuPu",
+          style = "jenks",
+          n = 5,
+          title = "Distance (km)") +
+  tm_borders(alpha = 0.2, lwd = 0.3) +
+  tm_layout(main.title = "Distance to Nearest Transit Stop",
+            legend.position = c("left", "bottom"),
+            main.title.size = 1.1,
+            frame = TRUE)
+
+tmap_arrange(tm1, tm2, tm3, tm4, tm5, ncol = 3)
 ```
 
 ```{r walkability-correlations}
 # Bivariate correlations: walkability vs each mapped variable
 city_stats <- chicago_city %>%
   st_drop_geometry() %>%
-  select(walk_score, pop_density_sqmi, intersection_density) %>%
+  select(walk_score, pop_density_sqmi, intersection_density,
+         workers_per_hh, transit_distance_km) %>%
   na.omit()
 
 city_quality_stats <- chicago_city_quality %>%
@@ -664,12 +692,18 @@ city_quality_stats <- chicago_city_quality %>%
 ct_pop <- cor.test(city_stats$walk_score, city_stats$pop_density_sqmi)
 ct_int <- cor.test(city_stats$walk_score, city_stats$intersection_density)
 ct_opp <- cor.test(city_quality_stats$walk_score, city_quality_stats$opportunity)
+ct_wkr <- cor.test(city_stats$walk_score, city_stats$workers_per_hh)
+ct_trn <- cor.test(city_stats$walk_score, city_stats$transit_distance_km)
 
 tibble(
-  Variable  = c("Population Density", "Street Intersection Density", "Economic Opportunity"),
-  r         = round(c(ct_pop$estimate, ct_int$estimate, ct_opp$estimate), 3),
-  `R²`      = round(c(ct_pop$estimate^2, ct_int$estimate^2, ct_opp$estimate^2), 3),
-  `p-value` = c(ct_pop$p.value, ct_int$p.value, ct_opp$p.value),
+  Variable  = c("Population Density", "Street Intersection Density",
+                "Economic Opportunity", "Workers per Household",
+                "Transit Distance (km)"),
+  r         = round(c(ct_pop$estimate, ct_int$estimate, ct_opp$estimate,
+                      ct_wkr$estimate, ct_trn$estimate), 3),
+  `R²`      = round(r^2, 3),
+  `p-value` = c(ct_pop$p.value, ct_int$p.value, ct_opp$p.value,
+                ct_wkr$p.value, ct_trn$p.value),
   Sig       = dplyr::case_when(
     `p-value` < 0.001 ~ "***",
     `p-value` < 0.01  ~ "**",
@@ -682,21 +716,44 @@ tibble(
   knitr::kable(caption = "Bivariate Pearson correlations with walkability score (two-tailed)")
 ```
 
-```{r regression-visualization, fig.width=10, fig.height=6}
-# Scatterplot: Walkability vs Population Density with regression line
-ggplot(final_data %>% st_drop_geometry(), 
-       aes(x = pop_density_sqmi, y = walk_score)) +
-  geom_point(alpha = 0.4, color = "#9970ab") +
-  geom_smooth(method = "lm", se = TRUE, color = "#301934") +
+```{r regression-visualization, fig.width=16, fig.height=6, message=FALSE}
+library(patchwork)
+
+scatter_data <- chicago_city %>% st_drop_geometry() %>%
+  select(walk_score, workers_per_hh, transit_distance_km) %>% na.omit()
+
+r2_wkr <- round(cor(scatter_data$walk_score, scatter_data$workers_per_hh)^2, 3)
+r2_trn <- round(cor(scatter_data$walk_score, scatter_data$transit_distance_km)^2, 3)
+
+p1 <- ggplot(scatter_data, aes(x = workers_per_hh, y = walk_score)) +
+  geom_point(alpha = 0.35, color = "#2b8cbe") +
+  geom_smooth(method = "lm", se = TRUE, color = "#084594") +
   scale_y_continuous(limits = c(0, 20)) +
-  scale_x_continuous(labels = comma) +
   labs(
-    title = "Relationship Between Population Density and Walkability",
-    x = "Population Density (per square mile)",
+    title = "Workers per Household vs Walkability",
+    subtitle = paste0("R² = ", r2_wkr),
+    x = "Workers per Household",
     y = "Walkability Score",
-    caption = "Each point represents one census tract"
+    caption = "Each point = one census tract"
   ) +
-  theme(plot.title = element_text(size = 14, face = "bold"))
+  theme(plot.title = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 11, color = "#555"))
+
+p2 <- ggplot(scatter_data, aes(x = transit_distance_km, y = walk_score)) +
+  geom_point(alpha = 0.35, color = "#e6550d") +
+  geom_smooth(method = "lm", se = TRUE, color = "#a63603") +
+  scale_y_continuous(limits = c(0, 20)) +
+  labs(
+    title = "Transit Distance vs Walkability",
+    subtitle = paste0("R² = ", r2_trn),
+    x = "Distance to Nearest Transit Stop (km)",
+    y = "Walkability Score",
+    caption = "Each point = one census tract"
+  ) +
+  theme(plot.title = element_text(size = 13, face = "bold"),
+        plot.subtitle = element_text(size = 11, color = "#555"))
+
+p1 + p2
 ```
 
 ```{r scatterplot-matrix, fig.width=8, fig.height=6}
